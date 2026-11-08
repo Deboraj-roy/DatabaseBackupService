@@ -274,3 +274,88 @@ sc.exe start SqlDatabaseBackupService
 3. For a visual walkthrough of integrating scheduled database jobs directly inside a Web API host, watch [.NET Core Background Service | Automate Database Tasks in Web API](https://www.youtube.com/watch?v=z4F1cSolknQ), which demonstrates setting up automated background database tasks in .NET Core.
 
 
+
+
+When your C# Worker Service executes the `BACKUP DATABASE` command, your .NET application does not actually create or write the `.bak` file itself. Instead, it passes the instruction to the **SQL Server Database Engine**, which runs in the background as a separate Windows Service under its own virtual Windows account (such as **NT SERVICE\MSSQLSERVER** or **NT SERVICE\MSSQL$SQLEXPRESS**).
+
+Even if your personal Windows login is an Administrator, SQL Server's virtual service account only has permission to write to its default installation directory. If you point the backup to a custom folder like **D:\SqlBackups** without granting that service account access first, Windows blocks SQL Server from creating the file and throws **Operating System Error 5 (Access is denied)**.
+
+---
+
+In the Windows folder **Security** settings below, notice how the SQL Server service account (**MSSQL$SQLEXPRESS**) appears in the **Group or user names** list at the top, while the **Modify**, **Read & execute**, **List folder contents**, and **Read** checkboxes are enabled under the **Allow** column at the bottom:
+
+---
+
+### How to Grant Folder Permissions to SQL Server
+
+Follow these steps in Windows to find your exact SQL Server service account name and grant it write access to **D:\SqlBackups**:
+
+1. **Find Your Exact SQL Server Service Account:** 2 min.
+Press **Win + R** on your keyboard, type **services.msc**, and press **Enter** to open the Windows Services manager. Scroll down to **SQL Server (MSSQLSERVER)** (or **SQL Server (SQLEXPRESS)** if you use Express) and look at the **Log On As** column. Double-click the service, open the **Log On** tab, and copy the exact account name shown in the **This account** box (usually **NT SERVICE\MSSQLSERVER** or **NT SERVICE\MSSQL$SQLEXPRESS**).
+*Verification:* You have the exact service account string copied to your clipboard.
+
+
+2. **Open the Folder Security Settings:** 1 min.
+Open File Explorer and create the **D:\SqlBackups** folder if it does not exist yet. Right-click the **SqlBackups** folder, click **Properties**, select the **Security** tab at the top, click the **Edit...** button, and then click **Add...**.
+*Verification:* The **Select Users or Groups** dialog window opens.
+
+
+3. **Set the Search Location to Your Local PC:** 1 min.
+If your computer is joined to a workplace domain, click the **Locations...** button inside the **Select Users or Groups** window, select your local computer name at the very top of the directory tree, and click **OK**. (Virtual **NT SERVICE** accounts only exist on the local machine, so searching an Active Directory domain will fail to find them.)
+*Verification:* The **From this location** field displays your local computer's hostname.
+
+
+4. **Add and Check the Service Account Name:** 1 min.
+In the **Enter the object names to select** box at the bottom, paste the exact service account name you copied in Step 1 (including the **NT SERVICE** prefix) and click **Check Names**. Click **OK** once the name resolves.
+*Verification:* Windows underlines the resolved account name (often shortening the display name to **MSSQLSERVER** or **MSSQL$SQLEXPRESS**) and adds it to the **Group or user names** list.
+
+
+5. **Enable Modify and Write Permissions:** 1 min.
+Click on the newly added **MSSQLSERVER** (or **MSSQL$SQLEXPRESS**) entry in the **Group or user names** list to highlight it. In the bottom **Permissions for** panel, check the **Allow** box next to **Modify** (which automatically selects **Write**, **Read & execute**, **List folder contents**, and **Read**), then click **Apply** and **OK**.
+*Verification:* The **Permissions** window closes and the **Security** tab displays checkmarks next to **Modify** and **Write** under the **Allow** column when your SQL Server account is selected.
+
+
+---
+
+### Immediate Verification Checklist
+
+1. **Test via SQL Server Management Studio (SSMS):** Open SSMS, right-click your database in Object Explorer → **Tasks** → **Back Up...**, remove the default path, click **Add...** to set the destination to **D:\SqlBackups\test.bak**, and click **OK** to confirm the backup completes without an access error.
+2. **Test Your .NET Worker Service:** Run your `DatabaseBackupService` project in Visual Studio 2022 and confirm that the timestamped `.bak` file appears inside **D:\SqlBackups**.
+3. **Video Walkthrough:** If you run into permission errors while configuring the folder, watch [SQL DBA 81-Cannot Open Backup Device 'BackupLocationPath'](https://www.youtube.com/watch?v=yJIM3i6qEX0) for a visual demonstration of resolving Operating System Error 5 in Windows.
+
+
+ sc.exe create SqlDatabaseBackupService binPath= "C:\Services\DatabaseBackupService\DatabaseBackupService.exe" start= auto
+[SC] OpenSCManager FAILED 5:
+
+Access is denied.
+
+
+The **Error 5 (Access is denied)** when using `sc.exe` means your current Command Prompt or PowerShell window does not have elevated privileges. Windows strictly requires Administrator rights to register new system services.
+
+You need to close your current terminal and open a new one as an Administrator.
+
+1. **Open an Administrator Terminal:** 1 min.
+Click the Windows Start button and type **cmd** (or **PowerShell**). In the search results, right-click **Command Prompt** (or Windows PowerShell) and select **Run as administrator**. Click **Yes** if the Windows User Account Control prompt asks for permission.
+*Verification:* The title bar at the top of the terminal window will explicitly say **Administrator: Command Prompt** or **Administrator: Windows PowerShell**.
+
+
+2. **Run the Service Creation Command:**
+Paste your exact command into this new Administrator window and press Enter:
+
+```cmd
+sc.exe create SqlDatabaseBackupService binPath= "C:\Services\DatabaseBackupService\DatabaseBackupService.exe" start= auto
+
+```
+
+*Verification:* The terminal will output `[SC] CreateService SUCCESS`.
+
+
+3. **Start the New Service:**
+Once the service is created successfully, command it to start running in the background:
+
+```cmd
+sc.exe start SqlDatabaseBackupService
+
+```
+
+*Verification:* The terminal will output a status block containing `STATE : 2 START_PENDING` or `4 RUNNING`.
