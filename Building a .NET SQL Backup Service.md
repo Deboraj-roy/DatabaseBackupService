@@ -373,3 +373,129 @@ ORDER BY backup_finish_date DESC;
 ```
 
 
+```
+
+service is running but backup not completed
+cd C:\Services\DatabaseBackupService
+PS C:\Services\DatabaseBackupService> sc.exe start SqlDatabaseBackupService
+
+SERVICE_NAME: SqlDatabaseBackupService
+        TYPE               : 10  WIN32_OWN_PROCESS
+        STATE              : 2  START_PENDING
+                                (NOT_STOPPABLE, NOT_PAUSABLE, IGNORES_SHUTDOWN)
+        WIN32_EXIT_CODE    : 0  (0x0)
+        SERVICE_EXIT_CODE  : 0  (0x0)
+        CHECKPOINT         : 0x0
+        WAIT_HINT          : 0x7d0
+        PID                : 22724
+        FLAGS              :
+PS C:\Services\DatabaseBackupService>
+```
+
+
+
+
+The service is actually running perfectly. The reason no backup was created immediately is because of how the new `Cronos` loop is structured.
+
+When the service starts, it calculates the next scheduled time (e.g., 2:00 AM, 6:00 AM, or 10:00 AM) and immediately executes `await Task.Delay(delay, stoppingToken);`. This puts the worker to sleep *before* it reaches the backup command. It is currently waiting in the background until the clock hits the exact scheduled time.
+
+If you want the service to perform an immediate backup the moment it is started or restarted, and *then* fall into the Cron schedule, you need to add one line of code before the `while` loop begins.
+
+1. **Add the Startup Backup Command:** 2 min.
+Open `SqlBackupWorker.cs` in Visual Studio. Inside your `ExecuteAsync` method, add `await RunBackupCycleAsync(stoppingToken);` immediately before the `while` loop starts.
+
+```csharp
+protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+{
+    _logger.LogInformation("Database Backup Service started at: {Time}", DateTimeOffset.Now);
+
+    // ADD THIS LINE: Run a backup immediately when the service starts
+    await RunBackupCycleAsync(stoppingToken);
+
+    while (!stoppingToken.IsCancellationRequested)
+    {
+        var options = _optionsMonitor.CurrentValue;
+        var expression = CronExpression.Parse(options.CronSchedule, CronFormat.Standard);
+        
+        var utcNow = DateTime.UtcNow;
+        var nextUtc = expression.GetNextOccurrence(utcNow, TimeZoneInfo.Local);
+        
+        if (nextUtc == null) return; 
+
+        var delay = nextUtc.Value - utcNow;
+        var localNextTime = nextUtc.Value.ToLocalTime();
+        
+        _logger.LogInformation("Next backup is precisely scheduled for: {NextTime}", localNextTime);
+
+        try
+        {
+            // Service sleeps here until the next scheduled time
+            await Task.Delay(delay, stoppingToken);
+        }
+        catch (TaskCanceledException)
+        {
+            break;
+        }
+
+        // Runs the scheduled backup after waking up
+        await RunBackupCycleAsync(stoppingToken);
+    }
+}
+
+```
+
+*Verification:* You have exactly two `await RunBackupCycleAsync(stoppingToken);` calls in your method—one before the loop, and one at the end of the loop.
+
+
+2. **Stop, Publish, and Restart the Service:** 1 min.
+Open your Administrator PowerShell window and stop the currently sleeping service, publish the new code, and start it again.
+
+```powershell
+sc.exe stop SqlDatabaseBackupService
+cd C:\Services\DatabaseBackupService
+dotnet publish -c Release -o C:\Services\DatabaseBackupService
+sc.exe start SqlDatabaseBackupService
+
+```
+
+*Verification:* Check your `D:\GDrive\SqlBackups` folder. A new `.bak` file will appear immediately. After it finishes, the service will go to sleep and wait for the next Cron schedule.
+```
+
+the problem is while i run the app in vs its working and backup to the D:\GDrive\SqlBackups folder.
+but when i publish it not backup to the folder whats going wrong?
+
+```
+The issue is caused by the `Trusted_Connection=True` setting in your `appsettings.json` connection string, combined with how Windows handles background service identities.
+
+When you run the app in Visual Studio or manually in PowerShell, it executes under your personal Windows user account (`GSA`). Your account automatically has permission to log into SQL Server.
+
+However, when you start it via `sc.exe`, Windows defaults to running the background service under a built-in computer account called **Local System** (`NT AUTHORITY\SYSTEM`). This invisible system account is being blocked by SQL Server because it does not have an authorized SQL login.
+
+The fastest and most reliable fix is to configure the Windows Service to run using your exact Windows credentials, so it perfectly matches your Visual Studio environment.
+
+1. **Open the Services Manager:** 1 min.
+Press **Win + R** on your keyboard, type **services.msc**, and press **Enter**.
+*Verification:* The Windows Services application opens, displaying a list of all background services.
+
+
+2. **Open the Service Properties:** 1 min.
+Scroll down and find **SqlDatabaseBackupService**. Right-click it and select **Properties**.
+*Verification:* The properties dialog box opens to the General tab. If the service is currently running, click the **Stop** button.
+
+
+3. **Change the Log On Identity:** 1 min.
+Click the **Log On** tab at the top. Change the selection from **Local System account** to **This account**.
+*Verification:* The username and password text boxes become editable.
+
+
+4. **Enter Your Windows Credentials:** 1 min.
+Type your exact Windows PC login name. (If your user folder is `C:\Users\GSA`, type **.\GSA** into the box. The `.\` tells Windows to look on the local machine). Enter your Windows login password in both password boxes, then click **Apply** and **OK**.
+*Verification:* A pop-up message will appear confirming that your account has been granted the "Log on as a service" right.
+
+
+5. **Restart the Service:**
+Right-click **SqlDatabaseBackupService** again and click **Start**.
+*Verification:* Because of the startup code we added earlier, you can immediately open your `D:\GDrive\SqlBackups` folder and verify the new `.bak` files are instantly generated.
+
+
+https://--/062bnbtTd1wv

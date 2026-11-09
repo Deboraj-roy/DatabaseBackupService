@@ -56,6 +56,9 @@ namespace DatabaseBackupService
         {
             _logger.LogInformation("Database Backup Service started at: {Time}", DateTimeOffset.Now);
 
+            // ADD THIS LINE: Run a backup immediately when the service starts
+            await RunBackupCycleAsync(stoppingToken);
+
             while (!stoppingToken.IsCancellationRequested)
             {
                 var options = _optionsMonitor.CurrentValue;
