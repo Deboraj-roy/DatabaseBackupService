@@ -359,3 +359,17 @@ sc.exe start SqlDatabaseBackupService
 ```
 
 *Verification:* The terminal will output a status block containing `STATE : 2 START_PENDING` or `4 RUNNING`.
+
+
+```
+SELECT TOP 100 
+    database_name, 
+    type, -- 'D' = Full, 'I' = Differential, 'L' = Log
+    backup_start_date, 
+    backup_finish_date, 
+    is_copy_only
+FROM msdb.dbo.backupset 
+ORDER BY backup_finish_date DESC;
+```
+
+

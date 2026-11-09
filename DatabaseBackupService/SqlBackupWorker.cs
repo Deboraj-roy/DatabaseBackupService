@@ -1,4 +1,5 @@
-﻿using DatabaseBackupService.Model;
+﻿using Cronos;
+using DatabaseBackupService.Model;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Options;
 using System;
@@ -23,26 +24,73 @@ namespace DatabaseBackupService
             _optionsMonitor = optionsMonitor;
         }
 
+        /// <summary>
+        /// The main background task for the database backup service.
+        /// </summary>
+        /// <param name="cancellationToken"></param>
+        /// <returns></returns>
+        //protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+        //{
+        //    _logger.LogInformation("Database Backup Service started at: {Time}", DateTimeOffset.Now);
+
+        //    // Execute an initial check/backup on startup, then wait for the periodic timer
+        //    await RunBackupCycleAsync(stoppingToken);
+
+        //    var interval = TimeSpan.FromHours(_optionsMonitor.CurrentValue.IntervalHours);
+        //    using var timer = new PeriodicTimer(interval);
+
+        //    try
+        //    {
+        //        while (await timer.WaitForNextTickAsync(stoppingToken))
+        //        {
+        //            await RunBackupCycleAsync(stoppingToken);
+        //        }
+        //    }
+        //    catch (OperationCanceledException)
+        //    {
+        //        _logger.LogInformation("Database Backup Service is stopping gracefully.");
+        //    }
+        //}
+
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
             _logger.LogInformation("Database Backup Service started at: {Time}", DateTimeOffset.Now);
 
-            // Execute an initial check/backup on startup, then wait for the periodic timer
-            await RunBackupCycleAsync(stoppingToken);
-
-            var interval = TimeSpan.FromHours(_optionsMonitor.CurrentValue.IntervalHours);
-            using var timer = new PeriodicTimer(interval);
-
-            try
+            while (!stoppingToken.IsCancellationRequested)
             {
-                while (await timer.WaitForNextTickAsync(stoppingToken))
+                var options = _optionsMonitor.CurrentValue;
+
+                // Parse the standard 5-part Cron expression from appsettings
+                var expression = CronExpression.Parse(options.CronSchedule, CronFormat.Standard);
+
+                // Calculate next occurrence using your server's Local Time Zone
+                var utcNow = DateTime.UtcNow;
+                var nextUtc = expression.GetNextOccurrence(utcNow, TimeZoneInfo.Local);
+
+                if (nextUtc == null)
                 {
-                    await RunBackupCycleAsync(stoppingToken);
+                    _logger.LogWarning("Cron expression is invalid or will never fire.");
+                    return;
                 }
-            }
-            catch (OperationCanceledException)
-            {
-                _logger.LogInformation("Database Backup Service is stopping gracefully.");
+
+                var delay = nextUtc.Value - utcNow;
+                var localNextTime = nextUtc.Value.ToLocalTime();
+
+                _logger.LogInformation("Next backup is precisely scheduled for: {NextTime}", localNextTime);
+
+                try
+                {
+                    // Sleep silently in the background until the exact Cron time is reached
+                    await Task.Delay(delay, stoppingToken);
+                }
+                catch (TaskCanceledException)
+                {
+                    _logger.LogInformation("Database Backup Service is stopping gracefully.");
+                    break;
+                }
+
+                // The exact time has been reached, execute the backup
+                await RunBackupCycleAsync(stoppingToken);
             }
         }
 
